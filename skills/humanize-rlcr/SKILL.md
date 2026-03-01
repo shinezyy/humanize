@@ -1,204 +1,114 @@
 ---
 name: humanize-rlcr
-description: Start RLCR (Ralph-Loop with Codex Review) iterative development loop. Implements plans with continuous Codex review until completion and code quality approval.
+description: Start RLCR (Ralph-Loop with Codex Review) with hook-equivalent enforcement from skill mode by reusing the existing stop-hook logic.
 type: flow
 ---
 
-# Humanize RLCR Loop
+# Humanize RLCR Loop (Hook-Equivalent)
 
-Starts an iterative development loop where:
-1. AI implements your plan
-2. AI writes a work summary  
-3. Codex reviews the summary
-4. Loop continues until COMPLETE, then code review phase begins
-5. Code review checks quality with `[P0-9]` markers
-6. Loop ends when no issues found
-
-## Flow Diagram
-
-```mermaid
-flowchart TD
-    BEGIN([BEGIN]) --> CHECK_ARGS{User provided<br/>plan file path?}
-    CHECK_ARGS -->|No| ASK_PLAN[Ask user for plan file path<br/>or --skip-impl option]
-    ASK_PLAN --> CHECK_ARGS
-    CHECK_ARGS -->|Yes| SETUP[SETUP: Run setup script with args]
-    SETUP --> CHECK_SETUP{Setup successful?}
-    CHECK_SETUP -->|No| REPORT_ERROR[Report setup error]
-    REPORT_ERROR --> END_FAIL([END])
-    CHECK_SETUP -->|Yes| ROUND_0[ROUND 0: Init Goal Tracker]
-    ROUND_0 --> ROUND_N[ROUND N: Implement & Write Summary]
-    ROUND_N --> RUN_CODEX[CODEX_REVIEW: Run codex review script]
-    RUN_CODEX --> CHECK_RESULT{Review result?}
-    CHECK_RESULT -->|CONTINUE| SHOW_FEEDBACK[Show feedback & continue]
-    SHOW_FEEDBACK --> ROUND_N
-    CHECK_RESULT -->|COMPLETE| CODE_REVIEW[CODE_REVIEW: Run codex code review]
-    CODE_REVIEW --> CHECK_ISSUES{Has [P0-9] issues?}
-    CHECK_ISSUES -->|Yes| FIX_ISSUES[Fix issues & continue]
-    FIX_ISSUES --> ROUND_N
-    CHECK_ISSUES -->|No| FINALIZE[FINALIZE: Complete loop]
-    FINALIZE --> END_SUCCESS([END])
-```
-
-## Flow Node Instructions
-
-### SETUP: Run setup script with args
-
-Execute the setup script:
+Use this flow to run RLCR in environments without native hooks.  
+Do not re-implement review logic manually. Always call the RLCR stop gate wrapper:
 
 ```bash
-/home/zyy/projects/humanize/scripts/setup-rlcr-loop.sh $ARGUMENTS
+"${HUMANIZE_ROOT}/scripts/rlcr-stop-gate.sh"
 ```
 
-Capture the output. If exit code != 0, report error and end.
+The wrapper executes `hooks/loop-codex-stop-hook.sh`, so skill-mode behavior stays aligned with hook-mode behavior.
 
-### ROUND 0: Init Goal Tracker
+## Runtime Root
 
-1. Read the plan file to understand Ultimate Goal and Acceptance Criteria
-2. Create `.humanize/rlcr/<timestamp>/goal-tracker.md` with:
-   - IMMUTABLE section: Ultimate Goal, Acceptance Criteria
-   - MUTABLE section: Active Tasks, Completed Items, Deferred Items, Plan Evolution Log
-
-### ROUND N: Implement & Write Summary
-
-1. Work on implementation according to plan
-2. Update goal-tracker.md with progress
-3. Write work summary to `.humanize/rlcr/<timestamp>/summary-<round>.md`
-
-### CODEX_REVIEW: Run codex review script
-
-**This is the critical step - ACTUALLY RUN THE SCRIPT:**
-
-The original plugin uses a template-based approach. Create a review prompt and pipe it to codex:
+Set root path once:
 
 ```bash
-# Load proxy settings first
-source ~/.zprofile
-
-# Setup paths (adjust LOOP_DIR and CACHE_DIR based on actual paths)
-LOOP_DIR=".humanize/rlcr/<timestamp>"
-CACHE_DIR="~/.cache/humanize/<project-path>/<timestamp>"
-ROUND="<N>"
-
-mkdir -p "$LOOP_DIR" "$CACHE_DIR"
-
-# Create the review prompt
-REVIEW_PROMPT_FILE="$LOOP_DIR/round-${ROUND}-review-prompt.md"
-cat > "$REVIEW_PROMPT_FILE" << 'EOF'
-Please review this work summary against the goal tracker.
-
-Output COMPLETE if all acceptance criteria are met.
-Otherwise, provide specific feedback on what needs to be done.
-EOF
-
-# Output files
-CODEX_STDOUT_FILE="$CACHE_DIR/round-${ROUND}-codex-stdout.md"
-CODEX_LOG_FILE="$CACHE_DIR/round-${ROUND}-codex.log"
-REVIEW_RESULT_FILE="$LOOP_DIR/round-${ROUND}-review-result.md"
-
-# Run codex exec with output redirection
-# Format: -m MODEL -c model_reasoning_effort=EFFORT --full-auto -C DIR
-# IMPORTANT: Use timeout 5400 seconds (90 minutes) - DO NOT use short timeouts
-cat "$REVIEW_PROMPT_FILE" | timeout 5400 codex exec \
-  -m gpt-5.3-codex \
-  -c model_reasoning_effort=xhigh \
-  --full-auto \
-  -C "$PWD" \
-  - > "$CODEX_STDOUT_FILE" 2> "$CODEX_LOG_FILE"
-
-# Copy stdout to review result for consistency
-cp "$CODEX_STDOUT_FILE" "$REVIEW_RESULT_FILE"
+export HUMANIZE_ROOT="/path/to/humanize"
+export HUMANIZE_ROOT="${HUMANIZE_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
 ```
 
-**Output file locations:**
-- **Codex stdout**: `~/.cache/humanize/<project-path>/<timestamp>/round-<N>-codex-stdout.md`
-- **Codex stderr/log**: `~/.cache/humanize/<project-path>/<timestamp>/round-<N>-codex.log`
-- **Review prompt**: `.humanize/rlcr/<timestamp>/round-<N>-review-prompt.md`
-- **Review result**: `.humanize/rlcr/<timestamp>/round-<N>-review-result.md`
+All commands below assume `${HUMANIZE_ROOT}` is set.
 
-Check the review result file for:
-- `COMPLETE` → proceed to CODE_REVIEW
-- Anything else → return feedback to user, continue to next round
+## Required Sequence
 
-### CODE_REVIEW: Run codex code review
+### 1. Setup
 
-**ACTUALLY RUN THE CODE REVIEW:**
+Start the loop with the setup script:
 
 ```bash
-# Load proxy settings first
-source ~/.zprofile
-
-# Setup paths
-LOOP_DIR=".humanize/rlcr/<timestamp>"
-CACHE_DIR="~/.cache/humanize/<project-path>/<timestamp>"
-ROUND="<N>"
-BASE_BRANCH="<base-branch>"  # Auto-detect or from --base-branch
-
-mkdir -p "$LOOP_DIR" "$CACHE_DIR"
-
-# Output files
-CODEX_REVIEW_LOG_FILE="$CACHE_DIR/round-${ROUND}-codex-review.log"
-REVIEW_PROMPT_FILE="$LOOP_DIR/round-${ROUND}-review-prompt.md"
-REVIEW_RESULT_FILE="$LOOP_DIR/round-${ROUND}-review-result.md"
-
-# Create audit prompt file (codex review doesn't accept prompts, but we create this for audit)
-cat > "$REVIEW_PROMPT_FILE" << EOF
-# Code Review Phase - Round ${ROUND}
-
-This file documents the code review invocation for audit purposes.
-Note: codex review does not accept prompt input; it performs automated code review based on git diff.
-
-## Review Configuration
-- Base Branch: ${BASE_BRANCH}
-- Review Round: ${ROUND}
-EOF
-
-# Run codex review with output redirection
-# IMPORTANT: Use timeout 5400 seconds (90 minutes) - DO NOT use short timeouts
-# Note: codex review outputs to stderr, so we redirect both stdout and stderr to the log file
-timeout 5400 codex review --base "$BASE_BRANCH" \
-  -c model=gpt-5.3-codex \
-  -c review_model=gpt-5.3-codex \
-  -c model_reasoning_effort=xhigh \
-  > "$CODEX_REVIEW_LOG_FILE" 2>&1
-
-# Copy log to review result
-cp "$CODEX_REVIEW_LOG_FILE" "$REVIEW_RESULT_FILE"
+"${HUMANIZE_ROOT}/scripts/setup-rlcr-loop.sh" $ARGUMENTS
 ```
 
-**Output file locations:**
-- **Codex stdout/log**: `~/.cache/humanize/<project-path>/<timestamp>/round-<N>-codex-review.log`
-- **Review prompt (audit)**: `.humanize/rlcr/<timestamp>/round-<N>-review-prompt.md`
-- **Review result**: `.humanize/rlcr/<timestamp>/round-<N>-review-result.md`
+If setup exits non-zero, stop and report the error.
 
-Check the review result file for `[P0-9]` markers.
+### 2. Work Round
 
-### FINALIZE: Complete loop
+For each round:
 
-1. Create finalize documentation
-2. Rename state file to complete
-3. Report success
+1. Read current loop prompt from `.humanize/rlcr/<timestamp>/round-<N>-prompt.md` (or `finalize` prompt files when in finalize phase).
+2. Implement required changes.
+3. Commit changes.
+4. Write required summary file:
+   - Normal phase: `.humanize/rlcr/<timestamp>/round-<N>-summary.md`
+   - Finalize phase: `.humanize/rlcr/<timestamp>/finalize-summary.md`
+5. Run gate command:
 
-## Decision Points
+```bash
+GATE_CMD=("${HUMANIZE_ROOT}/scripts/rlcr-stop-gate.sh")
+[[ -n "${CLAUDE_SESSION_ID:-}" ]] && GATE_CMD+=(--session-id "$CLAUDE_SESSION_ID")
+[[ -n "${CLAUDE_TRANSCRIPT_PATH:-}" ]] && GATE_CMD+=(--transcript-path "$CLAUDE_TRANSCRIPT_PATH")
+"${GATE_CMD[@]}"
+GATE_EXIT=$?
+```
 
-At **CHECK_RESULT**: Parse Codex output
-- If contains `COMPLETE` → go to CODE_REVIEW
-- Else → go to SHOW_FEEDBACK
+6. Handle gate result:
+   - `0`: loop is allowed to exit (done).
+   - `10`: blocked by RLCR logic. Follow returned instructions exactly, continue next round.
+   - `20`: infrastructure error (wrapper/hook/runtime). Report error, do not fake completion.
 
-At **CHECK_ISSUES**: Parse review output
-- If contains `[P0-9]` → go to FIX_ISSUES  
-- Else → go to FINALIZE
+## What This Enforces
 
-## Command Options
+By routing through the stop-hook logic, this skill enforces:
+
+- state/schema validation (`current_round`, `max_iterations`, `review_started`, `base_branch`, etc.)
+- branch consistency checks
+- plan-file integrity checks (when applicable)
+- incomplete Task/Todo blocking
+- git-clean requirement before exit
+- `--push-every-round` unpushed-commit blocking
+- summary presence checks
+- max-iteration handling
+- full-alignment rounds (`--full-review-round`)
+- strict `COMPLETE`/`STOP` marker handling
+- review-phase transition guard (`.review-phase-started` marker)
+- code-review gating on `[P0-9]` markers
+- hard blocking on codex review failure or empty output
+- open-question handling when `ask_codex_question=true`
+
+## Critical Rules
+
+1. Never manually edit `state.md` or `finalize-state.md`.
+2. Never skip a blocked gate result by declaring completion manually.
+3. Never run ad-hoc `codex exec` / `codex review` in place of the gate for phase transitions.
+4. Always use files generated by the loop (`round-*-prompt.md`, `round-*-review-result.md`) as source of truth.
+
+## Options
+
+Pass these through `setup-rlcr-loop.sh`:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `path/to/plan.md` | Plan file path | Required (unless --skip-impl) |
-| `--plan-file <path>` | Explicit plan file path | - |
+| `path/to/plan.md` | Plan file path | Required unless `--skip-impl` |
+| `--plan-file <path>` | Explicit plan path | - |
+| `--track-plan-file` | Enforce tracked plan immutability | false |
 | `--max N` | Maximum iterations | 42 |
-| `--codex-model MODEL:EFFORT` | Codex model | gpt-5.3-codex:xhigh |
-| `--codex-timeout SECONDS` | Review timeout | 5400 |
-| `--base-branch BRANCH` | Base for code review | auto-detect |
-| `--skip-impl` | Skip to code review | false |
+| `--codex-model MODEL:EFFORT` | Codex model and effort for `codex exec` | gpt-5.2:xhigh |
+| `--codex-timeout SECONDS` | Codex timeout | 5400 |
+| `--base-branch BRANCH` | Base for review phase | auto-detect |
+| `--full-review-round N` | Full alignment interval | 5 |
+| `--skip-impl` | Start directly in review path | false |
+| `--push-every-round` | Require push each round | false |
+| `--claude-answer-codex` | Let Claude answer open questions directly | false |
+| `--agent-teams` | Enable agent teams mode | false |
+
+Review phase `codex review` runs with `gpt-5.2:high`.
 
 ## Usage
 
@@ -206,15 +116,15 @@ At **CHECK_ISSUES**: Parse review output
 # Start with plan file
 /flow:humanize-rlcr path/to/plan.md
 
-# Skip implementation, review-only mode  
+# Review-only mode
 /flow:humanize-rlcr --skip-impl
 
 # Load skill without auto-execution
 /skill:humanize-rlcr
 ```
 
-## Canceling
+## Cancel
 
 ```bash
-/home/zyy/projects/humanize/scripts/cancel-rlcr-loop.sh
+"${HUMANIZE_ROOT}/scripts/cancel-rlcr-loop.sh"
 ```
