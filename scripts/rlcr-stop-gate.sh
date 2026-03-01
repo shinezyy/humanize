@@ -17,8 +17,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-HOOK_SCRIPT="$PROJECT_ROOT/hooks/loop-codex-stop-hook.sh"
+HUMANIZE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+HOOK_SCRIPT="$HUMANIZE_ROOT/hooks/loop-codex-stop-hook.sh"
 
 SESSION_ID="${CLAUDE_SESSION_ID:-}"
 TRANSCRIPT_PATH="${CLAUDE_TRANSCRIPT_PATH:-}"
@@ -59,7 +60,6 @@ while [[ $# -gt 0 ]]; do
         --project-root)
             [[ -n "${2:-}" ]] || { echo "Error: --project-root requires a value" >&2; exit 20; }
             PROJECT_ROOT="$2"
-            HOOK_SCRIPT="$PROJECT_ROOT/hooks/loop-codex-stop-hook.sh"
             shift 2
             ;;
         --json)
