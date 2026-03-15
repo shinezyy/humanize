@@ -12,3 +12,5 @@ temp
 # Python cache
 __pycache__/
 *.pyc
+
+/plans
